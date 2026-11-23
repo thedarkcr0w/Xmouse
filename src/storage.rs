@@ -59,6 +59,8 @@ pub struct Settings {
     pub console_platform: String,
     /// Account IDs that plugins need for pairing (e.g. a PSN account ID), by plugin id.
     pub plugin_accounts: std::collections::BTreeMap<String, String>,
+    /// The Xbox's address on the home network (e.g. 192.168.1.20). Empty = find it automatically.
+    pub xbox_console_ip: String,
 }
 
 impl Default for Settings {
@@ -89,6 +91,7 @@ impl Default for Settings {
             last_mode: PlayMode::Tv,
             console_platform: String::new(),
             plugin_accounts: Default::default(),
+            xbox_console_ip: String::new(),
         }
     }
 }

@@ -1009,6 +1009,8 @@ impl XMouseApp {
             },
             high_quality: self.settings.pc_high_quality,
             input_hz: self.settings.input_hz,
+            console_name: console.name.clone(),
+            console_ip: self.settings.xbox_console_ip.clone(),
             ..Default::default()
         };
         let ctx = self.ctx.clone();
@@ -3545,6 +3547,7 @@ impl XMouseApp {
             pc_sharp_upscale,
             input_hz,
             show_hud,
+            xbox_console_ip,
             ..
         } = s;
         columns(ui, |ui, col| {
@@ -3589,6 +3592,24 @@ impl XMouseApp {
                         "F7 shows or hides it.",
                         |ui| {
                             changed |= switch(ui, show_hud).changed();
+                        },
+                    );
+                });
+                section(ui, "Xbox connection");
+                group(ui, |ui| {
+                    control_row(
+                        ui,
+                        true,
+                        "Xbox IP address",
+                        "Leave empty to find it on your network. Type it in (Xbox: Settings > General > Network settings > Advanced settings) if connecting fails.",
+                        |ui| {
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(xbox_console_ip)
+                                        .hint_text("automatic")
+                                        .desired_width(150.0),
+                                )
+                                .changed();
                         },
                     );
                 });

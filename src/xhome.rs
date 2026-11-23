@@ -289,7 +289,20 @@ fn chrono_offset_minutes() -> i64 {
 }
 
 /// Consoles often advertise a Teredo IPv6 address; also offer the IPv4 address embedded in it.
+///
+/// Only when that's all there is: newer console software lists its real IPv4 addresses (LAN
+/// host and public srflx) itself, and the guessed `<public ip>:<teredo port>` candidates then
+/// only add dead pairs whose ICMP errors used to break the connection on Windows.
 pub fn expand_teredo(remote: Vec<IceCandidate>) -> Vec<IceCandidate> {
+    let has_ipv4 = remote.iter().any(|c| {
+        c.candidate
+            .split_whitespace()
+            .nth(4)
+            .is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+    });
+    if has_ipv4 {
+        return remote;
+    }
     let mut out = Vec::new();
     for c in remote {
         let parts: Vec<&str> = c.candidate.split_whitespace().collect();
@@ -384,5 +397,23 @@ mod tests {
         assert!(out[0].candidate.contains("192.0.2.45 9002"));
         assert!(out[1].candidate.contains("192.0.2.45 40000"));
         assert_eq!(out[2], c);
+    }
+
+    #[test]
+    fn no_teredo_guesses_when_the_console_lists_ipv4() {
+        let teredo = IceCandidate {
+            candidate:
+                "a=candidate:2 1 UDP 1 2001:0:4136:e378:8000:63bf:3fff:fdd2 9002 typ host ".into(),
+            sdp_mid: Some(json!("0")),
+            sdp_mline_index: Some(json!("0")),
+        };
+        let lan = IceCandidate {
+            candidate: "candidate:1 1 udp 2122194687 192.168.0.61 9002 typ host generation 0"
+                .into(),
+            sdp_mid: Some(json!("0")),
+            sdp_mline_index: Some(json!(0)),
+        };
+        let out = expand_teredo(vec![lan.clone(), teredo.clone()]);
+        assert_eq!(out, vec![lan, teredo]);
     }
 }

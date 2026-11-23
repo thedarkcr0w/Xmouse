@@ -20,6 +20,7 @@ pub mod framegen;
 pub mod hwdecode;
 #[cfg(windows)]
 pub mod vsr;
+pub mod xbox_lan;
 pub mod xhome;
 
 /// Pick the TLS crypto backend once (several dependencies enable different ones).

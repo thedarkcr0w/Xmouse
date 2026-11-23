@@ -1,0 +1,85 @@
+# Builds XMouse.exe on Windows and publishes it.
+#
+# - Pull requests (and "Run workflow" by hand on any branch): build only, the .exe is attached
+#   to the run as an artifact.
+# - Push to main: builds and updates the "nightly" pre-release with the newest XMouse.exe.
+# - Push a tag like v1.2.1: publishes a proper release named after the tag.
+#     git tag v1.2.1 && git push origin v1.2.1
+
+name: Build & release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # audiopus_sys builds the bundled libopus with a CMakeLists.txt that asks for CMake < 3.5,
+  # which CMake 4 (on the runners) refuses without this.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Unit tests
+        run: cargo test --release --locked --lib --target x86_64-pc-windows-msvc
+
+      - name: Collect XMouse.exe
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-msvc/release/xmouse.exe dist/XMouse.exe
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XMouse-${{ github.sha }}
+          path: dist/XMouse.exe
+
+      - name: Publish nightly pre-release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create nightly dist/XMouse.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Nightly (${GITHUB_SHA::7})" \
+            --notes "Automatic build of main at $GITHUB_SHA."
+
+      - name: Publish release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/XMouse.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "XMouse $GITHUB_REF_NAME" \
+            --generate-notes

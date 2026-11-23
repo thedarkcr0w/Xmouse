@@ -16,6 +16,9 @@ use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice::network_type::NetworkType;
+use webrtc::ice::udp_mux::{UDPMux, UDPMuxDefault, UDPMuxParams};
+use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -233,6 +236,13 @@ pub struct StreamConfig {
     pub input_hz: u32,
     pub ice_servers: Vec<String>,
     pub connect_timeout: Duration,
+    /// The console's name in the xHome list (to recognise it in LAN discovery).
+    pub console_name: String,
+    /// The console's LAN IPv4 address typed in by the user; empty = find it automatically.
+    pub console_ip: String,
+    /// The console's LAN address, once known: offered as an extra ICE candidate so the
+    /// connection can go straight across the home network.
+    pub lan_ip: Option<std::net::Ipv4Addr>,
 }
 
 impl Default for StreamConfig {
@@ -247,6 +257,9 @@ impl Default for StreamConfig {
                 "stun:stun1.l.google.com:19302".into(),
             ],
             connect_timeout: Duration::from_secs(45),
+            console_name: String::new(),
+            console_ip: String::new(),
+            lan_ip: None,
         }
     }
 }
@@ -301,10 +314,22 @@ pub async fn run_session(
 async fn run_session_inner(
     auth: &Arc<Auth>,
     console_id: &str,
-    cfg: StreamConfig,
+    mut cfg: StreamConfig,
     shared: &Arc<Shared>,
     repaint: &Repaint,
 ) -> Result<()> {
+    // Look for the console on the home network while the service wakes it up.
+    let manual_ip = cfg.console_ip.trim().parse::<std::net::Ipv4Addr>().ok();
+    if !cfg.console_ip.trim().is_empty() && manual_ip.is_none() {
+        log::warn!("ignoring console IP setting {:?}: not an IPv4 address", cfg.console_ip);
+    }
+    let discovery = if manual_ip.is_none() {
+        Some(tokio::task::spawn_blocking(|| {
+            crate::xbox_lan::discover(Duration::from_secs(3))
+        }))
+    } else {
+        None
+    };
     shared.set(
         Phase::Starting,
         "Asking Xbox to start a remote play session…",
@@ -346,6 +371,26 @@ async fn run_session_inner(
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+
+    cfg.lan_ip = match (manual_ip, discovery) {
+        (Some(ip), _) => {
+            log::info!("console LAN address from settings: {ip}");
+            Some(ip)
+        }
+        (None, Some(task)) => {
+            let found = task.await.unwrap_or_default();
+            let ip = crate::xbox_lan::pick(&found, &cfg.console_name);
+            match ip {
+                Some(ip) => log::info!("console LAN address found: {ip}"),
+                None => log::info!(
+                    "console not found on the LAN ({} answered); relying on the service's candidates",
+                    found.len()
+                ),
+            }
+            ip
+        }
+        (None, None) => None,
+    };
 
     shared.set(Phase::Connecting, "Connecting over your home network…");
     repaint();
@@ -630,6 +675,12 @@ pub async fn connect<S: Signaling>(
     // small audio packets did. Read with a buffer big enough for any UDP packet on the LAN.
     let mut settings = webrtc::api::setting_engine::SettingEngine::default();
     settings.set_receive_mtu(8192);
+    // One UDP socket of our own for all ICE traffic (see `ice_socket`), IPv4 only.
+    let mux = UDPMuxDefault::new(UDPMuxParams::new(tokio::net::UdpSocket::from_std(
+        ice_socket()?,
+    )?));
+    settings.set_udp_network(UDPNetwork::Muxed(mux.clone()));
+    settings.set_network_types(vec![NetworkType::Udp4]);
     let api = APIBuilder::new()
         .with_media_engine(m)
         .with_interceptor_registry(registry)
@@ -651,7 +702,56 @@ pub async fn connect<S: Signaling>(
     );
     let result = run_connection(&pc, sig, &cfg, &shared, &repaint).await;
     let _ = pc.close().await;
+    let _ = mux.close().await;
     result
+}
+
+/// The UDP socket ICE runs on.
+///
+/// webrtc-rs normally opens one socket per network interface and stops reading a socket at
+/// its first receive error. On Windows a datagram answered with ICMP "port unreachable" makes
+/// the *next* receive on that socket fail with WSAECONNRESET, so a single connectivity check
+/// to a dead address (e.g. the Teredo-derived `<public ip>:3074` candidate) silently killed
+/// the socket: the console's answers and checks were never read again and the connection
+/// failed after 30 s although the LAN path had already worked. Here the socket is ours, with
+/// that behaviour switched off.
+fn ice_socket() -> std::io::Result<std::net::UdpSocket> {
+    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_nonblocking(true)?;
+    #[cfg(windows)]
+    disable_udp_connreset(&socket);
+    log::info!("ICE socket: {}", socket.local_addr()?);
+    Ok(socket)
+}
+
+#[cfg(windows)]
+fn disable_udp_connreset(socket: &std::net::UdpSocket) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
+    // _WSAIOW(IOC_VENDOR, 12)
+    const SIO_UDP_CONNRESET: u32 = 0x9800_000C;
+    let off: u32 = 0;
+    let mut returned: u32 = 0;
+    // SAFETY: a valid socket handle, a 4-byte input buffer, no output buffer, no overlapped I/O.
+    let rc = unsafe {
+        WSAIoctl(
+            socket.as_raw_socket() as SOCKET,
+            SIO_UDP_CONNRESET,
+            &off as *const u32 as *const core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if rc != 0 {
+        log::warn!(
+            "could not turn off UDP connection resets on the ICE socket: {}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 async fn run_connection<S: Signaling>(
@@ -768,6 +868,10 @@ async fn run_connection<S: Signaling>(
         }
     }
 
+    pc.on_ice_connection_state_change(Box::new(|s| {
+        log::info!("ICE connection: {s}");
+        Box::pin(async {})
+    }));
     {
         let failed = failed.clone();
         pc.on_peer_connection_state_change(Box::new(move |s| {
@@ -831,6 +935,9 @@ async fn run_connection<S: Signaling>(
         .unwrap_or_default();
     let candidates = local_candidates(&local_sdp);
     log::info!("local ICE candidates: {}", candidates.len());
+    for c in &candidates {
+        log::info!("  local candidate: {}", c.candidate);
+    }
 
     let answer = sig
         .exchange_sdp(limit_resolution(
@@ -854,10 +961,22 @@ async fn run_connection<S: Signaling>(
         );
     }
 
-    let remote = sig
+    let mut remote = sig
         .exchange_ice(candidates)
         .await
         .context("ICE exchange failed")?;
+    if let Some(ip) = cfg.lan_ip {
+        let c = crate::xbox_lan::lan_candidate(ip);
+        log::info!("adding direct LAN candidate: {}", c.trim());
+        remote.insert(
+            0,
+            IceCandidate {
+                candidate: c,
+                sdp_mid: Some(json!("0")),
+                sdp_mline_index: Some(json!("0")),
+            },
+        );
+    }
     for c in &remote {
         if let Some(init) = remote_candidate(c) {
             if let Err(e) = pc.add_ice_candidate(init).await {

@@ -42,7 +42,7 @@ One small Windows app. Pick your console, press Play, and its picture and sound 
 
 ### Xbox
 
-1. **On your Xbox**, open *Settings → Devices & connections → Remote features* and turn on remote features. Under *Xbox app preferences*, allow connections from any device. Setting *Power mode* to *Sleep* lets XMouse wake the console for you.
+1. **On your Xbox**, open *Settings → Devices & connections → Remote features* and tick *Enable remote features*. On older dashboards there is also *Xbox app preferences*: if you see it, allow connections from any device (newer Series X|S dashboards no longer have it, which is fine). Set *Power mode* to *Sleep* so XMouse can wake the console, then run *Test remote play* in the same menu to check your network.
 2. **Pick Xbox** and **sign in** with the Microsoft account that's signed in on your Xbox. XMouse shows a short code and a Microsoft sign-in link; enter the code there.
 3. **Pick your console and game**, choose *Picture: On this PC*, and press **Play**.
 4. **Click the picture** to hand the mouse and keyboard to the game. **F8** gives them back.

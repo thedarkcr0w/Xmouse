@@ -6,11 +6,19 @@
 use xmouse::app::{Options, XMouseApp};
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(
+    // The release build has no console window, so also write the log to a file the user can
+    // send when a connection fails: %APPDATA%\XMouse\config\xmouse.log (overwritten each run).
+    let mut logger = env_logger::Builder::from_env(
         env_logger::Env::default()
-            .default_filter_or("info,webrtc=warn,webrtc_ice=warn,webrtc_sctp=warn"),
-    )
-    .init();
+            .default_filter_or("info,webrtc=warn,webrtc_ice=info,webrtc_sctp=warn"),
+    );
+    let log_dir = xmouse::storage::Storage::default_dir();
+    let _ = std::fs::create_dir_all(&log_dir);
+    if let Ok(file) = std::fs::File::create(log_dir.join("xmouse.log")) {
+        logger.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    logger.init();
+    log::info!("XMouse {} starting", env!("CARGO_PKG_VERSION"));
     // Windows wakes timers every ~15.6 ms by default, so a "120 Hz" input loop really ran at
     // ~64 Hz with uneven gaps. Ask for 1 ms resolution for as long as XMouse runs.
     #[cfg(windows)]
